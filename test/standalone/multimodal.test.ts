@@ -1,3 +1,4 @@
+import path from "path";
 import {describe, expect, it, beforeAll, afterAll} from "vitest";
 import {
     getLlama,
@@ -9,7 +10,6 @@ import {
     MultimodalInput,
     UnsupportedError
 } from "../../src/index.js";
-import path from "path";
 
 describe("Multimodal Functionality", () => {
     let llama: Awaited<ReturnType<typeof getLlama>>;
@@ -27,7 +27,7 @@ describe("Multimodal Functionality", () => {
             // This test uses a mock approach since we don't have actual model files in tests
             try {
                 const model = await LlamaMultimodalModel._create({
-                    modelPath: "/nonexistent/model.gguf",
+                    modelPath: "/nonexistent/model.gguf"
                     // No mmproj or audio model paths
                 }, {_llama: llama});
 
@@ -49,7 +49,7 @@ describe("Multimodal Functionality", () => {
                     }
                 },
                 _inferMaxImagesFromModel: () => 4,
-                _inferMaxAudioFilesFromModel: () => 2,
+                _inferMaxAudioFilesFromModel: () => 2
             };
 
             // Test the capability detection logic structure
@@ -57,7 +57,7 @@ describe("Multimodal Functionality", () => {
                 vision: {
                     supported: true,
                     maxImages: 4,
-                    supportedFormats: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
+                    supportedFormats: ["image/jpeg", "image/png", "image/webp", "image/gif"],
                     maxResolution: {width: 1344, height: 1344},
                     supportsImageGeneration: false,
                     supportsImageUnderstanding: true,
@@ -66,7 +66,7 @@ describe("Multimodal Functionality", () => {
                 audio: {
                     supported: true,
                     maxAudioFiles: 2,
-                    supportedFormats: ['audio/wav', 'audio/mp3', 'audio/flac'],
+                    supportedFormats: ["audio/wav", "audio/mp3", "audio/flac"],
                     maxDuration: 300,
                     supportedSampleRates: [16000, 22050, 44100, 48000],
                     supportsSpeechToText: false,
@@ -224,7 +224,7 @@ describe("Multimodal Functionality", () => {
                 "chameleon"
             ];
 
-            supportedArchitectures.forEach(arch => {
+            supportedArchitectures.forEach((arch) => {
                 expect(typeof arch).toBe("string");
                 expect(arch.length).toBeGreaterThan(0);
             });

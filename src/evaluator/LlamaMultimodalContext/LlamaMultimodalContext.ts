@@ -1,42 +1,43 @@
 import {DisposedError, EventRelay} from "lifecycle-utils";
-import type {LlamaContext, LlamaContextOptions} from "../LlamaContext/LlamaContext.js";
 import {LlamaMultimodalModel} from "../LlamaMultimodalModel/LlamaMultimodalModel.js";
 import {ImageInput, AudioInput, ImageEmbedding, AudioEmbedding, MultimodalInput} from "../../types/MultimodalTypes.js";
 import {LlamaText} from "../../utils/LlamaText.js";
 import {Token} from "../../types.js";
+import type {LlamaContextOptions} from "../LlamaContext/types.js";
+import type {LlamaContext} from "../LlamaContext/LlamaContext.js";
 
 export type LlamaMultimodalContextOptions = LlamaContextOptions & {
     /** Maximum number of images to keep in context */
-    maxImagesInContext?: number;
+    maxImagesInContext?: number,
 
     /** Maximum number of audio files to keep in context */
-    maxAudioInContext?: number;
+    maxAudioInContext?: number,
 
     /** Whether to automatically cache image embeddings */
-    autoImageCache?: boolean;
+    autoImageCache?: boolean,
 
     /** Whether to automatically cache audio embeddings */
-    autoAudioCache?: boolean;
+    autoAudioCache?: boolean,
 
     /** Image preprocessing options */
     imagePreprocessing?: {
         /** Resize images to this resolution before processing */
-        targetResolution?: {width: number; height: number};
+        targetResolution?: {width: number, height: number},
         /** Image quality (0-1) for JPEG compression */
-        quality?: number;
+        quality?: number,
         /** Whether to maintain aspect ratio when resizing */
-        maintainAspectRatio?: boolean;
-    };
+        maintainAspectRatio?: boolean
+    },
 
     /** Audio preprocessing options */
     audioPreprocessing?: {
         /** Target sample rate for audio processing */
-        targetSampleRate?: number;
+        targetSampleRate?: number,
         /** Whether to normalize audio volume */
-        normalizeVolume?: boolean;
+        normalizeVolume?: boolean,
         /** Maximum audio duration in seconds */
-        maxDuration?: number;
-    };
+        maxDuration?: number
+    }
 };
 
 /**
@@ -52,8 +53,8 @@ export class LlamaMultimodalContext {
     /** @internal */ private readonly _maxAudioInContext: number;
     /** @internal */ private readonly _autoImageCache: boolean;
     /** @internal */ private readonly _autoAudioCache: boolean;
-    /** @internal */ private readonly _imagePreprocessing?: LlamaMultimodalContextOptions['imagePreprocessing'];
-    /** @internal */ private readonly _audioPreprocessing?: LlamaMultimodalContextOptions['audioPreprocessing'];
+    /** @internal */ private readonly _imagePreprocessing?: LlamaMultimodalContextOptions["imagePreprocessing"];
+    /** @internal */ private readonly _audioPreprocessing?: LlamaMultimodalContextOptions["audioPreprocessing"];
     /** @internal */ private _disposed = false;
 
     public readonly onDispose = new EventRelay<void>();
@@ -79,7 +80,7 @@ export class LlamaMultimodalContext {
      */
     public static async create(model: LlamaMultimodalModel, options: LlamaMultimodalContextOptions): Promise<LlamaMultimodalContext> {
         // Create the base text context first
-        const baseContext = await model.createContext(options) as LlamaContext;
+        const baseContext = await model.createBaseContext(options);
 
         // Create the multimodal wrapper
         return new LlamaMultimodalContext(baseContext, model, options);
@@ -106,8 +107,8 @@ export class LlamaMultimodalContext {
      * Add audio to the current context
      */
     public async addAudio(input: AudioInput, options?: {
-        generateTranscript?: boolean;
-        language?: string;
+        generateTranscript?: boolean,
+        language?: string
     }): Promise<AudioEmbedding> {
         this._ensureNotDisposed();
 
@@ -126,12 +127,12 @@ export class LlamaMultimodalContext {
      * Evaluate a sequence of multimodal inputs (text, images, audio)
      */
     public async evaluate(inputs: MultimodalInput[], options?: {
-        temperature?: number;
-        topP?: number;
-        topK?: number;
+        temperature?: number,
+        topP?: number,
+        topK?: number
     }): Promise<{
-        tokens: Token[];
-        contextWindowPointer: number;
+        tokens: Token[],
+        contextWindowPointer: number
     }> {
         this._ensureNotDisposed();
 
@@ -139,28 +140,40 @@ export class LlamaMultimodalContext {
         const processedInputs: Token[] = [];
 
         for (const input of inputs) {
-            if (typeof input === 'string' || input instanceof LlamaText || Array.isArray(input)) {
+            if (typeof input === "string" || input instanceof LlamaText || Array.isArray(input)) {
                 // Text input - tokenize normally
                 const tokens = this._tokenizeInput(input);
                 processedInputs.push(...tokens);
-            } else if ('path' in input || 'data' in input) {
+            } else if ("path" in input || "data" in input) {
                 // Check if it's an image or audio input
                 if (this._isImageInput(input)) {
                     const embedding = await this.addImage(input as ImageInput);
                     // Convert embedding to tokens (this would need proper implementation)
-                    const tokens = this._embeddingToTokens(embedding.data);
+                    const tokens = this._embeddingToTokens(Array.from(embedding.embedding));
                     processedInputs.push(...tokens);
                 } else if (this._isAudioInput(input)) {
                     const embedding = await this.addAudio(input as AudioInput);
                     // Convert embedding to tokens (this would need proper implementation)
-                    const tokens = this._embeddingToTokens(embedding.data);
+                    const tokens = this._embeddingToTokens(Array.from(embedding.embedding));
                     processedInputs.push(...tokens);
                 }
             }
         }
 
         // Delegate to base context for actual evaluation
-        return await this._baseContext.evaluate(processedInputs, options as any);
+        const sequence = this._baseContext.getSequence();
+        const generator = sequence.evaluate(processedInputs, options as any);
+
+        // Convert the generator to the expected return type
+        const tokens: Token[] = [];
+        for await (const token of generator) {
+            tokens.push(token);
+        }
+
+        return {
+            tokens,
+            contextWindowPointer: sequence.nextTokenIndex
+        };
     }
 
     /**
@@ -187,10 +200,21 @@ export class LlamaMultimodalContext {
     }
 
     // Delegate base context properties and methods
-    public get contextSize(): number { return this._baseContext.contextSize; }
-    public get batchSize(): number { return this._baseContext.batchSize; }
-    public get model() { return this._model; }
-    public get isDisposed(): boolean { return this._disposed || this._baseContext.isDisposed; }
+    public get contextSize(): number {
+        return this._baseContext.contextSize;
+    }
+
+    public get batchSize(): number {
+        return this._baseContext.batchSize;
+    }
+
+    public get model() {
+        return this._model;
+    }
+
+    public get isDisposed(): boolean {
+        return this._disposed || this._baseContext.disposed;
+    }
 
     /**
      * Get a sequence for text generation
@@ -228,36 +252,51 @@ export class LlamaMultimodalContext {
             return input;
         }
 
-        if (typeof input === 'string') {
-            return this._model.tokenizer.encode(input);
+        if (typeof input === "string") {
+            // Use LlamaText to tokenize the string
+            return new LlamaText(input).tokenize(this._model.tokenizer);
         }
 
         // Handle LlamaText
-        return this._model.tokenizer.encode(input.toString());
+        return new LlamaText(input.toString()).tokenize(this._model.tokenizer);
     }
 
     /** @internal */
     private _isImageInput(input: any): boolean {
-        return input && (
-            input.format?.startsWith('image/') ||
-            (typeof input === 'string' && /\.(jpg|jpeg|png|webp|bmp|gif)$/i.test(input)) ||
-            (input.path && /\.(jpg|jpeg|png|webp|bmp|gif)$/i.test(input.path))
-        );
+        if (!input) return false;
+
+        // Check for ImageInput type properties
+        if ("path" in input || "data" in input || "buffer" in input) {
+            const hasImagePath = input.path && /\.(jpg|jpeg|png|webp|bmp|gif)$/i.test(input.path);
+            const hasImageMime = input.mimeType?.startsWith("image/");
+            return hasImagePath || hasImageMime;
+        }
+
+        // Check for simple string path
+        return typeof input === "string" && /\.(jpg|jpeg|png|webp|bmp|gif)$/i.test(input);
     }
 
     /** @internal */
     private _isAudioInput(input: any): boolean {
-        return input && (
-            input.format?.startsWith('audio/') ||
-            (typeof input === 'string' && /\.(wav|mp3|flac|ogg|m4a)$/i.test(input)) ||
-            (input.path && /\.(wav|mp3|flac|ogg|m4a)$/i.test(input.path))
-        );
+        if (!input) return false;
+
+        // Check for AudioInput type properties
+        if ("path" in input || "data" in input || "buffer" in input) {
+            const hasAudioPath = input.path && /\.(wav|mp3|flac|ogg|m4a)$/i.test(input.path);
+            const hasAudioMime = input.mimeType?.startsWith("audio/");
+            return hasAudioPath || hasAudioMime;
+        }
+
+        // Check for simple string path
+        return typeof input === "string" && /\.(wav|mp3|flac|ogg|m4a)$/i.test(input);
     }
 
     /** @internal */
     private _embeddingToTokens(embedding: number[]): Token[] {
         // This would need proper implementation to convert embeddings to tokens
         // For now, return a placeholder token
-        return [this._model.tokenizer.encode('<|vision|>')[0] || 0];
+        // Create special tokens for embedding representation
+        // In a real implementation, embeddings would be converted to token sequences
+        return [0 as Token]; // Placeholder embedding token
     }
 }

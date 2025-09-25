@@ -1,74 +1,74 @@
 import {DisposedError, EventRelay} from "lifecycle-utils";
 import {LlamaMultimodalContext} from "../LlamaMultimodalContext/LlamaMultimodalContext.js";
 import {LlamaMultimodalModel} from "../LlamaMultimodalModel/LlamaMultimodalModel.js";
-import {LlamaText} from "../../utils/LlamaText.js";
+import {LlamaCompletion} from "../LlamaCompletion.js";
 import {
     ImageInput, AudioInput, MultimodalChatMessage, MultimodalHistoryItem,
-    MultimodalSessionModelFunctions, MultimodalSessionModelFunction
+    MultimodalSessionModelFunctions
 } from "../../types/MultimodalTypes.js";
 
 export type LlamaMultimodalChatSessionOptions = {
     /** The multimodal context to use for the chat session */
-    context: LlamaMultimodalContext;
+    context: LlamaMultimodalContext,
 
     /** System message to set the assistant's behavior */
-    systemPrompt?: string;
+    systemPrompt?: string,
 
     /** Maximum number of tokens to generate */
-    maxTokens?: number;
+    maxTokens?: number,
 
     /** Temperature for randomness (0-1) */
-    temperature?: number;
+    temperature?: number,
 
     /** Top-p sampling parameter */
-    topP?: number;
+    topP?: number,
 
     /** Top-k sampling parameter */
-    topK?: number;
+    topK?: number,
 
     /** Whether to automatically process images when added */
-    autoProcessImages?: boolean;
+    autoProcessImages?: boolean,
 
     /** Whether to automatically process audio when added */
-    autoProcessAudio?: boolean;
+    autoProcessAudio?: boolean,
 
     /** Function calling capabilities */
-    functions?: MultimodalSessionModelFunctions;
+    functions?: MultimodalSessionModelFunctions,
 
     /** Custom prompt template for multimodal interactions */
     promptTemplate?: {
-        system?: string;
-        user?: string;
-        assistant?: string;
-        imageMarker?: string;
-        audioMarker?: string;
-    };
+        system?: string,
+        user?: string,
+        assistant?: string,
+        imageMarker?: string,
+        audioMarker?: string
+    }
 };
 
 export type LlamaMultimodalPromptOptions = {
     /** Maximum tokens to generate */
-    maxTokens?: number;
+    maxTokens?: number,
 
     /** Temperature for randomness */
-    temperature?: number;
+    temperature?: number,
 
     /** Top-p sampling */
-    topP?: number;
+    topP?: number,
 
     /** Top-k sampling */
-    topK?: number;
+    topK?: number,
 
     /** Stop sequences */
-    stop?: string[];
+    stop?: string[],
 
     /** Whether to trim whitespace from response */
-    trimWhitespaceSuffix?: boolean;
+    trimWhitespaceSuffix?: boolean,
 
     /** Custom functions to call */
-    functions?: MultimodalSessionModelFunctions;
+    functions?: MultimodalSessionModelFunctions,
 
     /** Signal to abort generation */
-    signal?: AbortSignal;
+    signal?: AbortSignal
 };
 
 /**
@@ -83,7 +83,7 @@ export class LlamaMultimodalChatSession {
     /** @internal */ private readonly _autoProcessImages: boolean;
     /** @internal */ private readonly _autoProcessAudio: boolean;
     /** @internal */ private readonly _functions?: MultimodalSessionModelFunctions;
-    /** @internal */ private readonly _promptTemplate: Required<NonNullable<LlamaMultimodalChatSessionOptions['promptTemplate']>>;
+    /** @internal */ private readonly _promptTemplate: Required<NonNullable<LlamaMultimodalChatSessionOptions["promptTemplate"]>>;
     /** @internal */ private _disposed = false;
 
     public readonly onDispose = new EventRelay<void>();
@@ -148,9 +148,9 @@ export class LlamaMultimodalChatSession {
             for (const image of message.images) {
                 if (this._autoProcessImages) {
                     const embedding = await this._context.addImage(image);
-                    historyItem.images.push({ input: image, embedding });
+                    historyItem.images.push({input: image, embedding});
                 } else {
-                    historyItem.images.push({ input: image });
+                    historyItem.images.push({input: image});
                 }
             }
         }
@@ -163,9 +163,9 @@ export class LlamaMultimodalChatSession {
                     const embedding = await this._context.addAudio(audio, {
                         generateTranscript: true
                     });
-                    historyItem.audio.push({ input: audio, embedding });
+                    historyItem.audio.push({input: audio, embedding});
                 } else {
-                    historyItem.audio.push({ input: audio });
+                    historyItem.audio.push({input: audio});
                 }
             }
         }
@@ -179,19 +179,21 @@ export class LlamaMultimodalChatSession {
         const sequence = this._context.getSequence();
 
         try {
-            const response = await sequence.generate(new LlamaText(prompt), {
+            // Create a completion instance
+            const completion = new LlamaCompletion({
+                contextSequence: sequence
+            });
+
+            // Generate the completion
+            const result = await completion.generateCompletion(prompt, {
                 maxTokens: options?.maxTokens ?? 1000,
                 temperature: options?.temperature ?? 0.7,
                 topP: options?.topP ?? 0.9,
                 topK: options?.topK ?? 40,
-                stopOnAbortSignal: true,
-                signal: options?.signal,
-                onToken: (tokens) => {
-                    // Could emit token events here if needed
-                }
+                signal: options?.signal
             });
 
-            const responseText = this._model.tokenizer.detokenize(response);
+            const responseText = result;
 
             // Add assistant response to history
             this._history.push({
@@ -201,7 +203,6 @@ export class LlamaMultimodalChatSession {
             });
 
             return responseText;
-
         } finally {
             // Cleanup sequence resources if needed
         }
@@ -219,8 +220,8 @@ export class LlamaMultimodalChatSession {
      * Add audio to the current conversation context
      */
     public async addAudio(audio: AudioInput, options?: {
-        generateTranscript?: boolean;
-        language?: string;
+        generateTranscript?: boolean,
+        language?: string
     }): Promise<void> {
         this._ensureNotDisposed();
         await this._context.addAudio(audio, options);
@@ -240,7 +241,7 @@ export class LlamaMultimodalChatSession {
         this._ensureNotDisposed();
 
         // Keep only system prompt
-        const systemPrompts = this._history.filter(item => item.type === "system");
+        const systemPrompts = this._history.filter((item) => item.type === "system");
         this._history.length = 0;
         this._history.push(...systemPrompts);
 
@@ -335,7 +336,7 @@ export class LlamaMultimodalChatSession {
 
             // Add audio markers and transcripts
             if (item.audio && item.audio.length > 0) {
-                const audioContent = item.audio.map(a => {
+                const audioContent = item.audio.map((a) => {
                     let audioText = this._promptTemplate.audioMarker;
                     if (a.embedding?.transcript) {
                         audioText += ` [Transcript: ${a.embedding.transcript}]`;

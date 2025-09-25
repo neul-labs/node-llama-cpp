@@ -1,3 +1,5 @@
+import path from "path";
+import {fileURLToPath} from "url";
 import {
     getLlama,
     LlamaMultimodalModel,
@@ -5,8 +7,6 @@ import {
     ImageInput,
     AudioInput
 } from "node-llama-cpp";
-import path from "path";
-import {fileURLToPath} from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -28,8 +28,8 @@ async function multimodalChatExample() {
             contextSize: 4096
         });
 
-        console.log(`📋 Vision capabilities:`, model.getVisionCapabilities());
-        console.log(`📋 Audio capabilities:`, model.getAudioCapabilities());
+        console.log("📋 Vision capabilities:", model.getVisionCapabilities());
+        console.log("📋 Audio capabilities:", model.getAudioCapabilities());
 
         // Create a multimodal context
         const context = await model.createContext({
@@ -108,7 +108,7 @@ async function multimodalChatExample() {
         console.log("🤖 AI Response (using cached processing):", response4);
 
         // Check cache statistics
-        console.log(`\n📊 Cache Statistics:`);
+        console.log("\n📊 Cache Statistics:");
         console.log(`- Images cached: ${model.cachedImageCount}`);
         console.log(`- Audio cached: ${model.cachedAudioCount}`);
 
@@ -118,7 +118,6 @@ async function multimodalChatExample() {
         await model.dispose();
 
         console.log("\n✅ Multimodal chat example completed!");
-
     } catch (error) {
         console.error("❌ Error:", error);
         if (error instanceof Error) {
