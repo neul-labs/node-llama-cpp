@@ -13,6 +13,7 @@ export function getVitepressSidebar(blog?: DefaultTheme.SidebarItem[]): DefaultT
                 {text: "Getting Started", link: "/"},
                 {text: "Chat Session", link: "/chat-session"},
                 {text: "Chat Wrapper", link: "/chat-wrapper"},
+                {text: "Multimodal Models", link: "/multimodal"},
                 {text: "Grammar", link: "/grammar"},
                 {text: "Function Calling", link: "/function-calling"},
                 {text: "Embedding", link: "/embedding"},
@@ -39,6 +40,7 @@ export function getVitepressSidebar(blog?: DefaultTheme.SidebarItem[]): DefaultT
                 {text: "Batching", link: "/batching"},
                 {text: "Token Prediction", link: "/token-prediction"},
                 {text: "Low Level API", link: "/low-level-api"},
+                {text: "Multimodal Examples", link: "/multimodal-examples"},
                 {text: "Awesome List", link: "/awesome"},
                 {text: "Troubleshooting", link: "/troubleshooting"},
                 {text: "Tips and Tricks", link: "/tips-and-tricks"}

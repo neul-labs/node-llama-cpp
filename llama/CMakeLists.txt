@@ -126,12 +126,68 @@ list(REMOVE_DUPLICATES GPU_INFO_HEADERS)
 list(REMOVE_DUPLICATES GPU_INFO_SOURCES)
 list(REMOVE_DUPLICATES GPU_INFO_EXTRA_LIBS)
 
-addVariantSuffix(llama ${NLC_VARIANT})
-addVariantSuffix(ggml ${NLC_VARIANT})
+# Multimodal support configuration
+unset(MULTIMODAL_HEADERS)
+unset(MULTIMODAL_SOURCES)
+unset(MULTIMODAL_EXTRA_LIBS)
 
-file(GLOB SOURCE_FILES "addon/*.cpp" "addon/**/*.cpp" ${GPU_INFO_SOURCES})
+option(LLAMA_MULTIMODAL "Enable multimodal support (vision and audio)" ON)
+option(LLAMA_CLIP "Enable CLIP vision support" ON)
+option(LLAMA_WHISPER "Enable Whisper audio support" ON)
 
-add_library(${PROJECT_NAME} SHARED ${SOURCE_FILES} ${CMAKE_JS_SRC} ${GPU_INFO_HEADERS})
+if (LLAMA_MULTIMODAL)
+    message(STATUS "Enabling multimodal support")
+
+    # Check if mtmd library is available
+    if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/tools/mtmd/mtmd.h")
+        message(STATUS "Found mtmd library - enabling full multimodal support")
+
+        # Add mtmd sources and headers
+        list(APPEND MULTIMODAL_SOURCES
+            "${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/tools/mtmd/mtmd.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/tools/mtmd/mtmd-helper.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/tools/mtmd/clip.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/tools/mtmd/mtmd-audio.cpp"
+        )
+        list(APPEND MULTIMODAL_HEADERS
+            "${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/tools/mtmd/mtmd.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/tools/mtmd/mtmd-helper.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/tools/mtmd/clip.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/tools/mtmd/mtmd-audio.h"
+        )
+
+        # Add include directory for mtmd
+        include_directories("${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/tools/mtmd")
+
+        # Enable multimodal compilation flags
+        add_compile_definitions(LLAMA_MTMD_AVAILABLE)
+        add_compile_definitions(LLAMA_CLIP_AVAILABLE)
+        add_compile_definitions(LLAMA_MULTIMODAL_AVAILABLE)
+
+        # Enable audio support
+        if (LLAMA_WHISPER)
+            add_compile_definitions(LLAMA_WHISPER_AVAILABLE)
+        endif()
+
+    else()
+        message(WARNING "mtmd library not found - multimodal support will be limited")
+    endif()
+endif()
+
+list(REMOVE_DUPLICATES MULTIMODAL_HEADERS)
+list(REMOVE_DUPLICATES MULTIMODAL_SOURCES)
+list(REMOVE_DUPLICATES MULTIMODAL_EXTRA_LIBS)
+
+if(DEFINED NLC_VARIANT AND NOT NLC_VARIANT STREQUAL "")
+    addVariantSuffix(llama ${NLC_VARIANT})
+    addVariantSuffix(ggml ${NLC_VARIANT})
+endif()
+
+# Include all addon sources and multimodal support
+file(GLOB SOURCE_FILES_ALL "addon/*.cpp" "addon/**/*.cpp")
+set(SOURCE_FILES ${SOURCE_FILES_ALL} ${GPU_INFO_SOURCES} ${MULTIMODAL_SOURCES})
+
+add_library(${PROJECT_NAME} SHARED ${SOURCE_FILES} ${CMAKE_JS_SRC} ${GPU_INFO_HEADERS} ${MULTIMODAL_HEADERS})
 set_target_properties(${PROJECT_NAME} PROPERTIES PREFIX "" SUFFIX ".node")
 target_link_libraries(${PROJECT_NAME} ${CMAKE_JS_LIB})
 target_link_libraries(${PROJECT_NAME} "llama")
@@ -139,6 +195,10 @@ target_link_libraries(${PROJECT_NAME} "common")
 
 if (DEFINED GPU_INFO_EXTRA_LIBS)
     target_link_libraries(${PROJECT_NAME} ${GPU_INFO_EXTRA_LIBS})
+endif()
+
+if (DEFINED MULTIMODAL_EXTRA_LIBS)
+    target_link_libraries(${PROJECT_NAME} ${MULTIMODAL_EXTRA_LIBS})
 endif()
 
 if(MSVC AND CMAKE_JS_NODELIB_DEF AND CMAKE_JS_NODELIB_TARGET)

@@ -91,6 +91,17 @@ import {
 import {jsonDumps} from "./chatWrappers/utils/jsonDumps.js";
 import {experimentalChunkDocument} from "./evaluator/utils/chunkDocument.js";
 
+// Multimodal imports
+import {LlamaMultimodalModel, LlamaMultimodalModelOptions} from "./evaluator/LlamaMultimodalModel/LlamaMultimodalModel.js";
+import {LlamaMultimodalContext, LlamaMultimodalContextOptions} from "./evaluator/LlamaMultimodalContext/LlamaMultimodalContext.js";
+import {LlamaMultimodalChatSession, LlamaMultimodalChatSessionOptions, LlamaMultimodalPromptOptions} from "./evaluator/LlamaMultimodalChatSession/LlamaMultimodalChatSession.js";
+import {
+    ImageInput, AudioInput, ImageEmbedding, AudioEmbedding, MultimodalInput,
+    MultimodalChatMessage, MultimodalHistoryItem, MultimodalSessionModelFunctions,
+    MultimodalSessionModelFunction, MultimodalCapabilities, VisionModelCapabilities,
+    AudioProcessingOptions
+} from "./types/MultimodalTypes.js";
+
 import {
     type ChatHistoryItem, type ChatModelFunctionCall, type ChatModelSegmentType, type ChatModelSegment, type ChatModelFunctions,
     type ChatModelResponse, type ChatSessionModelFunction, type ChatSessionModelFunctions, type ChatSystemMessage, type ChatUserMessage,
@@ -325,5 +336,26 @@ export {
     type CombinedModelDownloaderOptions,
     jsonDumps,
     type OverridesObject,
-    experimentalChunkDocument
+    experimentalChunkDocument,
+
+    // Multimodal exports
+    LlamaMultimodalModel,
+    type LlamaMultimodalModelOptions,
+    LlamaMultimodalContext,
+    type LlamaMultimodalContextOptions,
+    LlamaMultimodalChatSession,
+    type LlamaMultimodalChatSessionOptions,
+    type LlamaMultimodalPromptOptions,
+    type ImageInput,
+    type AudioInput,
+    type ImageEmbedding,
+    type AudioEmbedding,
+    type MultimodalInput,
+    type MultimodalChatMessage,
+    type MultimodalHistoryItem,
+    type MultimodalSessionModelFunctions,
+    type MultimodalSessionModelFunction,
+    type MultimodalCapabilities,
+    type VisionModelCapabilities,
+    type AudioProcessingOptions
 };

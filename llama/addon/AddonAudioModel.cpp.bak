@@ -1,0 +1,495 @@
+#include "AddonAudioModel.h"
+
+// Include audio processing libraries
+#ifdef LLAMA_WHISPER_AVAILABLE
+    #include "whisper.h"
+#endif
+
+// Audio decoding libraries - not yet integrated
+// #ifdef LLAMA_DR_LIBS_AVAILABLE
+//     #define DR_WAV_IMPLEMENTATION
+//     #include "dr_wav.h"
+//     #define DR_MP3_IMPLEMENTATION
+//     #include "dr_mp3.h"
+//     #define DR_FLAC_IMPLEMENTATION
+//     #include "dr_flac.h"
+// #endif
+
+AddonAudioModel::AddonAudioModel(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    if (info.Length() < 1) {
+        Napi::TypeError::New(env, "Expected 1 argument: audioModelPath").ThrowAsJavaScriptException();
+        return;
+    }
+
+    if (!info[0].IsString()) {
+        Napi::TypeError::New(env, "audioModelPath must be a string").ThrowAsJavaScriptException();
+        return;
+    }
+
+    this->audioModelPath = info[0].As<Napi::String>().Utf8Value();
+
+    // Parse options if provided
+    if (info.Length() > 1 && info[1].IsObject()) {
+        Napi::Object options = info[1].As<Napi::Object>();
+
+        if (options.Has("sampleRate") && options.Get("sampleRate").IsNumber()) {
+            this->sampleRate = options.Get("sampleRate").As<Napi::Number>().Int32Value();
+        }
+
+        if (options.Has("language") && options.Get("language").IsString()) {
+            this->currentLanguage = options.Get("language").As<Napi::String>().Utf8Value();
+        }
+    }
+
+    detectAudioCapabilities();
+}
+
+AddonAudioModel::~AddonAudioModel() {
+    dispose();
+}
+
+void AddonAudioModel::dispose() {
+    if (disposed) return;
+
+    if (whisper_ctx != nullptr) {
+#ifdef LLAMA_WHISPER_AVAILABLE
+        whisper_free(whisper_ctx);
+#endif
+        whisper_ctx = nullptr;
+    }
+
+    audioModelLoaded = false;
+    disposed = true;
+}
+
+Napi::Value AddonAudioModel::Init(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    bool success = loadAudioModel();
+    return Napi::Boolean::New(env, success);
+}
+
+Napi::Value AddonAudioModel::Dispose(const Napi::CallbackInfo& info) {
+    dispose();
+    return info.Env().Undefined();
+}
+
+Napi::Value AddonAudioModel::ProcessAudio(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    if (info.Length() < 2) {
+        Napi::TypeError::New(env, "Expected 2 arguments: audioData, sampleRate").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+
+    if (!info[0].IsTypedArray() || !info[1].IsNumber()) {
+        Napi::TypeError::New(env, "Invalid argument types").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+
+    if (!audioModelLoaded) {
+        Napi::Error::New(env, "Audio model not loaded").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+
+    // Get audio data
+    Napi::Float32Array audioArray = info[0].As<Napi::Float32Array>();
+    int inputSampleRate = info[1].As<Napi::Number>().Int32Value();
+
+    // Parse options
+    bool generateTranscript = true;
+    if (info.Length() > 2 && info[2].IsObject()) {
+        Napi::Object options = info[2].As<Napi::Object>();
+        if (options.Has("generateTranscript") && options.Get("generateTranscript").IsBoolean()) {
+            generateTranscript = options.Get("generateTranscript").As<Napi::Boolean>().Value();
+        }
+    }
+
+    try {
+        // Resample audio to model's expected sample rate if needed
+        std::vector<float> processedAudio;
+        if (inputSampleRate != sampleRate) {
+            processedAudio = resampleAudio(audioArray.Data(), audioArray.ElementLength(), inputSampleRate, sampleRate);
+        } else {
+            processedAudio.assign(audioArray.Data(), audioArray.Data() + audioArray.ElementLength());
+        }
+
+        // Normalize audio
+        normalizeAudio(processedAudio.data(), processedAudio.size());
+
+        // Process the audio
+        ProcessAudioResult result = processAudioData(processedAudio.data(), processedAudio.size(), generateTranscript);
+
+        // Create result object
+        Napi::Object resultObj = Napi::Object::New(env);
+
+        // Create embedding array
+        Napi::Float32Array embeddingArray = Napi::Float32Array::New(env, result.embedding.size());
+        for (size_t i = 0; i < result.embedding.size(); i++) {
+            embeddingArray[i] = result.embedding[i];
+        }
+        resultObj.Set("embedding", embeddingArray);
+
+        if (generateTranscript) {
+            resultObj.Set("transcript", Napi::String::New(env, result.transcript));
+            resultObj.Set("confidence", Napi::Number::New(env, result.confidence));
+        }
+
+        return resultObj;
+    } catch (const std::exception& e) {
+        Napi::Error::New(env, std::string("Audio processing failed: ") + e.what()).ThrowAsJavaScriptException();
+        return env.Null();
+    }
+}
+
+Napi::Value AddonAudioModel::GetAudioCapabilities(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    Napi::Object caps = Napi::Object::New(env);
+    caps.Set("maxAudioFiles", Napi::Number::New(env, audioCaps.maxAudioFiles));
+    caps.Set("maxDuration", Napi::Number::New(env, audioCaps.maxDuration));
+    caps.Set("supportsSpeechToText", Napi::Boolean::New(env, audioCaps.supportsSpeechToText));
+
+    // Supported formats array
+    Napi::Array formats = Napi::Array::New(env, audioCaps.supportedFormats.size());
+    for (size_t i = 0; i < audioCaps.supportedFormats.size(); i++) {
+        formats[i] = Napi::String::New(env, audioCaps.supportedFormats[i]);
+    }
+    caps.Set("supportedFormats", formats);
+
+    // Supported sample rates array
+    Napi::Array sampleRates = Napi::Array::New(env, audioCaps.supportedSampleRates.size());
+    for (size_t i = 0; i < audioCaps.supportedSampleRates.size(); i++) {
+        sampleRates[i] = Napi::Number::New(env, audioCaps.supportedSampleRates[i]);
+    }
+    caps.Set("supportedSampleRates", sampleRates);
+
+    // Supported languages array
+    Napi::Array languages = Napi::Array::New(env, audioCaps.supportedLanguages.size());
+    for (size_t i = 0; i < audioCaps.supportedLanguages.size(); i++) {
+        languages[i] = Napi::String::New(env, audioCaps.supportedLanguages[i]);
+    }
+    caps.Set("supportedLanguages", languages);
+
+    return caps;
+}
+
+Napi::Value AddonAudioModel::SetSampleRate(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        Napi::TypeError::New(env, "Expected number argument").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    int newSampleRate = info[0].As<Napi::Number>().Int32Value();
+
+    // Validate sample rate
+    auto& supported = audioCaps.supportedSampleRates;
+    if (std::find(supported.begin(), supported.end(), newSampleRate) == supported.end()) {
+        Napi::Error::New(env, "Unsupported sample rate").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    this->sampleRate = newSampleRate;
+    return env.Undefined();
+}
+
+Napi::Value AddonAudioModel::SetLanguage(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    if (info.Length() < 1 || !info[0].IsString()) {
+        Napi::TypeError::New(env, "Expected string argument").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    std::string newLanguage = info[0].As<Napi::String>().Utf8Value();
+
+    if (!isValidLanguage(newLanguage)) {
+        Napi::Error::New(env, "Unsupported language").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    this->currentLanguage = newLanguage;
+    return env.Undefined();
+}
+
+bool AddonAudioModel::loadAudioModel() {
+    if (audioModelLoaded) return true;
+
+    try {
+#ifdef LLAMA_WHISPER_AVAILABLE
+        // Load Whisper model
+        whisper_ctx = whisper_init_from_file(audioModelPath.c_str());
+        if (whisper_ctx == nullptr) {
+            return false;
+        }
+
+        audioModelLoaded = true;
+        detectAudioCapabilities();
+        return true;
+#else
+        // Fallback implementation when Whisper is not available
+        return false;
+#endif
+    } catch (const std::exception& e) {
+        return false;
+    }
+}
+
+AddonAudioModel::ProcessAudioResult AddonAudioModel::processAudioData(const float* audioData, size_t audioLength, bool generateTranscript) {
+    ProcessAudioResult result;
+
+#ifdef LLAMA_WHISPER_AVAILABLE
+    if (!audioModelLoaded || whisper_ctx == nullptr) {
+        throw std::runtime_error("Audio model not loaded");
+    }
+
+    // Extract audio features for embedding
+    result.embedding = extractAudioFeatures(audioData, audioLength);
+
+    // Generate transcript if requested
+    if (generateTranscript) {
+        result.transcript = transcribeAudio(audioData, audioLength);
+        result.confidence = 0.85f; // Placeholder confidence score
+    }
+
+    return result;
+#else
+    throw std::runtime_error("Whisper support not available - compile with LLAMA_WHISPER_AVAILABLE");
+#endif
+}
+
+std::vector<float> AddonAudioModel::extractAudioFeatures(const float* audioData, size_t audioLength) {
+#ifdef LLAMA_WHISPER_AVAILABLE
+    // Use Whisper's encoder to extract features
+    // This is a simplified approach - in practice, you'd want to extract mel spectrograms
+    // and run them through the encoder part of Whisper
+
+    std::vector<float> features;
+
+    // For now, create a simple feature vector (this would be replaced with actual Whisper encoder output)
+    const int feature_dim = 512; // Whisper encoder dimension
+    features.resize(feature_dim, 0.0f);
+
+    // Simple feature extraction (placeholder)
+    // In practice, this would use whisper_encode() or similar
+    float energy = 0.0f;
+    for (size_t i = 0; i < audioLength; i++) {
+        energy += audioData[i] * audioData[i];
+    }
+    energy /= audioLength;
+
+    // Fill features with computed values
+    for (int i = 0; i < feature_dim; i++) {
+        features[i] = energy * (i + 1) / feature_dim;
+    }
+
+    return features;
+#else
+    return {};
+#endif
+}
+
+std::string AddonAudioModel::transcribeAudio(const float* audioData, size_t audioLength) {
+#ifdef LLAMA_WHISPER_AVAILABLE
+    if (!whisper_ctx) return "";
+
+    // Set up Whisper parameters
+    whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
+
+    // Set language if specified
+    if (currentLanguage != "auto") {
+        params.language = currentLanguage.c_str();
+    }
+
+    params.print_realtime = false;
+    params.print_progress = false;
+    params.print_timestamps = false;
+    params.print_special = false;
+    params.translate = false;
+    params.no_context = false;
+    params.single_segment = true;
+
+    // Run inference
+    if (whisper_full(whisper_ctx, params, audioData, (int)audioLength) != 0) {
+        return "";
+    }
+
+    // Extract text
+    std::string result;
+    const int n_segments = whisper_full_n_segments(whisper_ctx);
+    for (int i = 0; i < n_segments; i++) {
+        const char* text = whisper_full_get_segment_text(whisper_ctx, i);
+        if (text) {
+            result += text;
+        }
+    }
+
+    return result;
+#else
+    return "";
+#endif
+}
+
+void AddonAudioModel::detectAudioCapabilities() {
+    // Set capabilities based on model type and compilation flags
+#ifdef LLAMA_WHISPER_AVAILABLE
+    audioCaps.supportsSpeechToText = true;
+    audioCaps.maxDuration = 600; // 10 minutes for Whisper
+#else
+    audioCaps.supportsSpeechToText = false;
+    audioCaps.maxDuration = 60; // Limited without proper audio support
+#endif
+}
+
+bool AddonAudioModel::isValidAudioFormat(const std::string& mimeType) {
+    return std::find(audioCaps.supportedFormats.begin(), audioCaps.supportedFormats.end(), mimeType)
+           != audioCaps.supportedFormats.end();
+}
+
+bool AddonAudioModel::isValidLanguage(const std::string& language) {
+    return language == "auto" ||
+           std::find(audioCaps.supportedLanguages.begin(), audioCaps.supportedLanguages.end(), language)
+           != audioCaps.supportedLanguages.end();
+}
+
+std::vector<float> AddonAudioModel::resampleAudio(const float* audioData, size_t length, int fromSampleRate, int toSampleRate) {
+    if (fromSampleRate == toSampleRate) {
+        return std::vector<float>(audioData, audioData + length);
+    }
+
+    // Simple linear interpolation resampling (in practice, you'd use a proper resampler)
+    double ratio = (double)toSampleRate / fromSampleRate;
+    size_t newLength = (size_t)(length * ratio);
+    std::vector<float> resampled(newLength);
+
+    for (size_t i = 0; i < newLength; i++) {
+        double srcIndex = i / ratio;
+        size_t index1 = (size_t)srcIndex;
+        size_t index2 = std::min(index1 + 1, length - 1);
+        double fraction = srcIndex - index1;
+
+        resampled[i] = (float)((1.0 - fraction) * audioData[index1] + fraction * audioData[index2]);
+    }
+
+    return resampled;
+}
+
+void AddonAudioModel::normalizeAudio(float* audioData, size_t length) {
+    // Find peak amplitude
+    float peak = 0.0f;
+    for (size_t i = 0; i < length; i++) {
+        peak = std::max(peak, std::abs(audioData[i]));
+    }
+
+    // Normalize to prevent clipping
+    if (peak > 0.0f && peak > 0.95f) {
+        float scale = 0.95f / peak;
+        for (size_t i = 0; i < length; i++) {
+            audioData[i] *= scale;
+        }
+    }
+}
+
+Napi::Function AddonAudioModel::GetClass(Napi::Env env) {
+    return DefineClass(env, "AddonAudioModel", {
+        InstanceMethod("init", &AddonAudioModel::Init),
+        InstanceMethod("dispose", &AddonAudioModel::Dispose),
+        InstanceMethod("processAudio", &AddonAudioModel::ProcessAudio),
+        InstanceMethod("getAudioCapabilities", &AddonAudioModel::GetAudioCapabilities),
+        InstanceMethod("setSampleRate", &AddonAudioModel::SetSampleRate),
+        InstanceMethod("setLanguage", &AddonAudioModel::SetLanguage)
+    });
+}
+
+// AudioUtils namespace implementation
+namespace AudioUtils {
+    AudioData decodeAudio(const uint8_t* encodedData, size_t dataSize, const std::string& mimeType) {
+        AudioData result;
+
+#ifdef LLAMA_DR_LIBS_AVAILABLE
+        if (mimeType == "audio/wav" || mimeType == "audio/wave") {
+            drwav wav;
+            if (drwav_init_memory(&wav, encodedData, dataSize, nullptr)) {
+                result.length = wav.totalPCMFrameCount * wav.channels;
+                result.data = std::make_unique<float[]>(result.length);
+                result.sampleRate = (int)wav.sampleRate;
+                result.channels = wav.channels;
+                result.duration = (float)wav.totalPCMFrameCount / wav.sampleRate;
+
+                drwav_read_pcm_frames_f32(&wav, wav.totalPCMFrameCount, result.data.get());
+                drwav_uninit(&wav);
+            }
+        }
+        else if (mimeType == "audio/mp3" || mimeType == "audio/mpeg") {
+            drmp3_config config;
+            drmp3_uint64 totalFrames;
+            float* audioData = drmp3_open_memory_and_read_pcm_frames_f32(
+                encodedData, dataSize, &config, &totalFrames, nullptr);
+
+            if (audioData) {
+                result.length = totalFrames * config.channels;
+                result.data = std::unique_ptr<float[]>(audioData);
+                result.sampleRate = (int)config.sampleRate;
+                result.channels = config.channels;
+                result.duration = (float)totalFrames / config.sampleRate;
+            }
+        }
+        else if (mimeType == "audio/flac") {
+            drflac* flac = drflac_open_memory(encodedData, dataSize, nullptr);
+            if (flac) {
+                result.length = flac->totalPCMFrameCount * flac->channels;
+                result.data = std::make_unique<float[]>(result.length);
+                result.sampleRate = (int)flac->sampleRate;
+                result.channels = flac->channels;
+                result.duration = (float)flac->totalPCMFrameCount / flac->sampleRate;
+
+                drflac_read_pcm_frames_f32(flac, flac->totalPCMFrameCount, result.data.get());
+                drflac_close(flac);
+            }
+        }
+#endif
+
+        return result;
+    }
+
+    bool isSupportedAudioFormat(const std::string& mimeType) {
+        static const std::vector<std::string> supported = {
+            "audio/wav", "audio/wave", "audio/mp3", "audio/mpeg", "audio/flac", "audio/ogg"
+        };
+        return std::find(supported.begin(), supported.end(), mimeType) != supported.end();
+    }
+
+    void convertToMono(float* stereoData, size_t stereoLength, float* monoData) {
+        for (size_t i = 0; i < stereoLength / 2; i++) {
+            monoData[i] = (stereoData[i * 2] + stereoData[i * 2 + 1]) * 0.5f;
+        }
+    }
+
+    std::vector<float> applyPreEmphasis(const float* audioData, size_t length, float factor) {
+        std::vector<float> emphasized(length);
+        emphasized[0] = audioData[0];
+
+        for (size_t i = 1; i < length; i++) {
+            emphasized[i] = audioData[i] - factor * audioData[i - 1];
+        }
+
+        return emphasized;
+    }
+
+    std::vector<float> computeMelSpectrogram(const float* audioData, size_t length, int sampleRate) {
+        // Placeholder for mel spectrogram computation
+        // In practice, this would involve FFT, mel filter bank, etc.
+        std::vector<float> melSpec(80 * (length / 512)); // 80 mel bins, frame size 512
+
+        // Simple placeholder computation
+        for (size_t i = 0; i < melSpec.size(); i++) {
+            melSpec[i] = std::log(1.0f + std::abs(audioData[i % length]));
+        }
+
+        return melSpec;
+    }
+}

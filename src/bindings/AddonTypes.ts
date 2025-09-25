@@ -16,6 +16,28 @@ export type BindingModule = {
             overridesList?: Array<[key: string, value: number | bigint | boolean | string, type: 0 | 1 | undefined]>
         }): AddonModel
     },
+    AddonVisionModel: {
+        new (modelPath: string, mmprojPath: string, params: {
+            addonExports?: BindingModule,
+            gpuLayers?: number,
+            vocabOnly?: boolean,
+            useMmap?: boolean,
+            useMlock?: boolean,
+            checkTensors?: boolean,
+            onLoadProgress?(loadPercentage: number): void,
+            hasLoadAbortSignal?: boolean,
+            overridesList?: Array<[key: string, value: number | bigint | boolean | string, type: 0 | 1 | undefined]>
+        }): AddonVisionModel
+    },
+    AddonAudioModel: {
+        new (audioModelPath: string, params: {
+            addonExports?: BindingModule,
+            sampleRate?: number,
+            language?: string,
+            onLoadProgress?(loadPercentage: number): void,
+            hasLoadAbortSignal?: boolean
+        }): AddonAudioModel
+    },
     AddonModelLora: {
         new (model: AddonModel, filePath: string): AddonModelLora
     },
@@ -88,7 +110,35 @@ export type BindingModule = {
     init(): Promise<void>,
     setNuma(numa?: LlamaNuma): void,
     loadBackends(forceLoadLibrariesSearchPath?: string): void,
-    dispose(): Promise<void>
+    dispose(): Promise<void>,
+
+    // Multimodal processing functions
+    processImage(imageData: Uint8Array, width: number, height: number): Promise<Float32Array>,
+    processAudio(audioData: Float32Array, sampleRate: number, options?: {
+        language?: string,
+        generateTranscript?: boolean,
+        normalize?: boolean
+    }): Promise<{
+        embedding: Float32Array,
+        transcript?: string,
+        confidence?: number
+    }>,
+
+    // Image utility functions
+    decodeImage(imageData: Uint8Array, mimeType: string): Promise<{
+        data: Uint8Array,
+        width: number,
+        height: number,
+        channels: number
+    }>,
+
+    // Audio utility functions
+    decodeAudio(audioData: Uint8Array, mimeType: string): Promise<{
+        data: Float32Array,
+        sampleRate: number,
+        channels: number,
+        duration: number
+    }>
 };
 
 export type AddonModel = {
@@ -117,7 +167,26 @@ export type AddonModel = {
     getVocabularyType(): number,
     shouldPrependBosToken(): boolean,
     shouldAppendEosToken(): boolean,
-    getModelSize(): number
+    getModelSize(): number,
+
+    // Multimodal methods
+    processImageNative?(imageData: Uint8Array, width: number, height: number): Promise<Float32Array>,
+    processAudioNative?(audioData: Float32Array, sampleRate: number, options?: {
+        language?: string,
+        generateTranscript?: boolean
+    }): Promise<{
+        embedding: Float32Array,
+        transcript?: string,
+        confidence?: number
+    }>,
+    getMultimodalCapabilities?(): {
+        supportsVision: boolean,
+        supportsAudio: boolean,
+        maxImages: number,
+        maxAudioFiles: number,
+        supportedImageFormats: string[],
+        supportedAudioFormats: string[]
+    }
 };
 
 export type AddonContext = {
@@ -189,6 +258,40 @@ export type AddonSampler = {
         tokenBiasKeys?: Uint32Array,
         tokenBiasValues?: Float32Array
     }): void
+};
+
+export type AddonVisionModel = AddonModel & {
+    processImage(imageData: Uint8Array, width: number, height: number): Promise<Float32Array>,
+    getVisionCapabilities(): {
+        maxImages: number,
+        supportedFormats: string[],
+        maxResolution: {width: number, height: number},
+        supportsImageGeneration: boolean
+    }
+};
+
+export type AddonAudioModel = {
+    init(): Promise<boolean>,
+    dispose(): Promise<void>,
+    processAudio(audioData: Float32Array, sampleRate: number, options?: {
+        language?: string,
+        generateTranscript?: boolean,
+        normalize?: boolean
+    }): Promise<{
+        embedding: Float32Array,
+        transcript?: string,
+        confidence?: number
+    }>,
+    getAudioCapabilities(): {
+        maxAudioFiles: number,
+        supportedFormats: string[],
+        maxDuration: number,
+        supportedSampleRates: number[],
+        supportsSpeechToText: boolean,
+        supportedLanguages: string[]
+    },
+    setSampleRate(sampleRate: number): void,
+    setLanguage(language: string): void
 };
 
 export type AddonModelLora = {

@@ -1,0 +1,323 @@
+#include "AddonVisionModel.h"
+#include "AddonModel.h"
+#include <stdexcept>
+
+// Include image processing libraries (these would need to be added as dependencies)
+#ifdef LLAMA_CLIP_AVAILABLE
+    #include "clip.h"
+#endif
+
+#ifdef LLAMA_STBI_AVAILABLE
+    #define STB_IMAGE_IMPLEMENTATION
+    #include "stb_image.h"
+#endif
+
+AddonVisionModel::AddonVisionModel(const Napi::CallbackInfo& info) : AddonModel(info) {
+    Napi::Env env = info.Env();
+
+    if (info.Length() < 2) {
+        Napi::TypeError::New(env, "Expected 2 arguments: modelPath and mmprojPath").ThrowAsJavaScriptException();
+        return;
+    }
+
+    if (!info[1].IsString()) {
+        Napi::TypeError::New(env, "mmprojPath must be a string").ThrowAsJavaScriptException();
+        return;
+    }
+
+    this->mmprojPath = info[1].As<Napi::String>().Utf8Value();
+    detectVisionCapabilities();
+}
+
+AddonVisionModel::~AddonVisionModel() {
+    dispose();
+}
+
+void AddonVisionModel::dispose() {
+    if (disposed) return;
+
+    if (clip_context != nullptr) {
+#ifdef LLAMA_CLIP_AVAILABLE
+        clip_free(clip_context);
+#endif
+        clip_context = nullptr;
+    }
+
+    visionModelLoaded = false;
+    AddonModel::dispose(); // Call parent dispose
+}
+
+Napi::Value AddonVisionModel::Init(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    // First initialize the base model
+    Napi::Value result = AddonModel::Init(info);
+    if (!result.As<Napi::Boolean>().Value()) {
+        return result;
+    }
+
+    // Then initialize the vision model
+    bool visionSuccess = loadVisionModel();
+    return Napi::Boolean::New(env, visionSuccess);
+}
+
+Napi::Value AddonVisionModel::ProcessImage(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    if (info.Length() < 3) {
+        Napi::TypeError::New(env, "Expected 3 arguments: imageData, width, height").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+
+    if (!info[0].IsTypedArray() || !info[1].IsNumber() || !info[2].IsNumber()) {
+        Napi::TypeError::New(env, "Invalid argument types").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+
+    if (!visionModelLoaded) {
+        Napi::Error::New(env, "Vision model not loaded").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+
+    // Get image data and dimensions
+    Napi::Uint8Array imageArray = info[0].As<Napi::Uint8Array>();
+    int width = info[1].As<Napi::Number>().Int32Value();
+    int height = info[2].As<Napi::Number>().Int32Value();
+
+    try {
+        // Process the image and get embeddings
+        std::vector<float> embedding = processImageData(imageArray.Data(), width, height, 3);
+
+        // Create Float32Array to return
+        Napi::Float32Array result = Napi::Float32Array::New(env, embedding.size());
+        for (size_t i = 0; i < embedding.size(); i++) {
+            result[i] = embedding[i];
+        }
+
+        return result;
+    } catch (const std::exception& e) {
+        Napi::Error::New(env, std::string("Image processing failed: ") + e.what()).ThrowAsJavaScriptException();
+        return env.Null();
+    }
+}
+
+Napi::Value AddonVisionModel::GetVisionCapabilities(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+
+    Napi::Object caps = Napi::Object::New(env);
+    caps.Set("maxImages", Napi::Number::New(env, visionCaps.maxImages));
+    caps.Set("supportsImageGeneration", Napi::Boolean::New(env, visionCaps.supportsImageGeneration));
+
+    // Supported formats array
+    Napi::Array formats = Napi::Array::New(env, visionCaps.supportedFormats.size());
+    for (size_t i = 0; i < visionCaps.supportedFormats.size(); i++) {
+        formats[i] = Napi::String::New(env, visionCaps.supportedFormats[i]);
+    }
+    caps.Set("supportedFormats", formats);
+
+    // Max resolution object
+    Napi::Object maxRes = Napi::Object::New(env);
+    maxRes.Set("width", Napi::Number::New(env, visionCaps.maxResolution.width));
+    maxRes.Set("height", Napi::Number::New(env, visionCaps.maxResolution.height));
+    caps.Set("maxResolution", maxRes);
+
+    return caps;
+}
+
+bool AddonVisionModel::loadVisionModel() {
+    if (visionModelLoaded) return true;
+
+    try {
+#ifdef LLAMA_CLIP_AVAILABLE
+        // Load CLIP model from mmproj path
+        clip_context = clip_model_load(mmprojPath.c_str(), /* verbosity */ 1);
+        if (clip_context == nullptr) {
+            return false;
+        }
+
+        visionModelLoaded = true;
+        detectVisionCapabilities();
+        return true;
+#else
+        // Fallback implementation when CLIP is not available
+        return false;
+#endif
+    } catch (const std::exception& e) {
+        return false;
+    }
+}
+
+std::vector<float> AddonVisionModel::processImageData(const uint8_t* imageData, int width, int height, int channels) {
+#ifdef LLAMA_CLIP_AVAILABLE
+    if (!visionModelLoaded || clip_context == nullptr) {
+        throw std::runtime_error("Vision model not loaded");
+    }
+
+    // Load image from raw data
+    clip_image_u8* image = loadImageFromData(imageData, width, height, channels);
+    if (!image) {
+        throw std::runtime_error("Failed to load image data");
+    }
+
+    // Preprocess image
+    clip_image_f32* processed = preprocessImage(image);
+    if (!processed) {
+        throw std::runtime_error("Failed to preprocess image");
+    }
+
+    // Encode image to get embeddings
+    std::vector<float> embedding = encodeImage(processed);
+
+    // Cleanup
+    clip_image_u8_free(image);
+    clip_image_f32_free(processed);
+
+    return embedding;
+#else
+    // Placeholder implementation
+    throw std::runtime_error("CLIP support not available - compile with LLAMA_CLIP_AVAILABLE");
+    return {}; // Never reached, but prevents compiler warning
+#endif
+}
+
+#ifdef LLAMA_CLIP_AVAILABLE
+clip_image_u8* AddonVisionModel::loadImageFromData(const uint8_t* data, int width, int height, int channels) {
+    clip_image_u8* image = clip_image_u8_init();
+    if (!image) return nullptr;
+
+    image->nx = width;
+    image->ny = height;
+    image->data.resize(width * height * 3); // Always convert to RGB
+
+    // Copy and convert data to RGB if needed
+    for (int i = 0; i < width * height; i++) {
+        if (channels >= 3) {
+            image->data[i * 3 + 0] = data[i * channels + 0]; // R
+            image->data[i * 3 + 1] = data[i * channels + 1]; // G
+            image->data[i * 3 + 2] = data[i * channels + 2]; // B
+        } else {
+            // Grayscale to RGB
+            uint8_t gray = data[i];
+            image->data[i * 3 + 0] = gray;
+            image->data[i * 3 + 1] = gray;
+            image->data[i * 3 + 2] = gray;
+        }
+    }
+
+    return image;
+}
+
+clip_image_f32* AddonVisionModel::preprocessImage(clip_image_u8* image) {
+    if (!image) return nullptr;
+    return clip_image_preprocess(clip_context, image);
+}
+
+std::vector<float> AddonVisionModel::encodeImage(clip_image_f32* image) {
+    if (!image || !clip_context) {
+        return {};
+    }
+
+    // Get embedding dimension
+    int embed_dim = clip_n_mmproj_embd(clip_context);
+    std::vector<float> embedding(embed_dim);
+
+    // Encode image
+    bool success = clip_image_encode(clip_context, /* n_threads */ 4, image, embedding.data());
+    if (!success) {
+        return {};
+    }
+
+    return embedding;
+}
+#endif
+
+void AddonVisionModel::detectVisionCapabilities() {
+    // Detect capabilities based on the model architecture
+    // This would typically involve querying the loaded model
+
+    // Set default capabilities for now
+    visionCaps.maxImages = 4; // Most vision models can handle multiple images
+    visionCaps.supportsImageGeneration = false; // Most are encoder-only
+    visionCaps.maxResolution = {1344, 1344}; // Common max resolution
+    visionCaps.supportedFormats = {"image/jpeg", "image/png", "image/webp", "image/bmp"};
+}
+
+bool AddonVisionModel::isValidImageFormat(const std::string& mimeType) {
+    return std::find(visionCaps.supportedFormats.begin(), visionCaps.supportedFormats.end(), mimeType)
+           != visionCaps.supportedFormats.end();
+}
+
+Napi::Function AddonVisionModel::GetClass(Napi::Env env) {
+    return DefineClass(env, "AddonVisionModel", {
+        InstanceMethod("init", &AddonVisionModel::Init),
+        InstanceMethod("dispose", &AddonVisionModel::Dispose),
+        InstanceMethod("processImage", &AddonVisionModel::ProcessImage),
+        InstanceMethod("getVisionCapabilities", &AddonVisionModel::GetVisionCapabilities),
+
+        // Inherit all AddonModel methods
+        InstanceMethod("tokenize", &AddonVisionModel::Tokenize),
+        InstanceMethod("detokenize", &AddonVisionModel::Detokenize),
+        InstanceMethod("getTrainContextSize", &AddonVisionModel::GetTrainContextSize),
+        InstanceMethod("getEmbeddingVectorSize", &AddonVisionModel::GetEmbeddingVectorSize),
+        InstanceMethod("getTotalSize", &AddonVisionModel::GetTotalSize),
+        InstanceMethod("getTotalParameters", &AddonVisionModel::GetTotalParameters),
+        InstanceMethod("getModelDescription", &AddonVisionModel::GetModelDescription),
+        InstanceMethod("tokenBos", &AddonVisionModel::TokenBos),
+        InstanceMethod("tokenEos", &AddonVisionModel::TokenEos),
+        InstanceMethod("tokenNl", &AddonVisionModel::TokenNl),
+        InstanceMethod("prefixToken", &AddonVisionModel::PrefixToken),
+        InstanceMethod("middleToken", &AddonVisionModel::MiddleToken),
+        InstanceMethod("suffixToken", &AddonVisionModel::SuffixToken),
+        InstanceMethod("eotToken", &AddonVisionModel::EotToken),
+        InstanceMethod("sepToken", &AddonVisionModel::SepToken),
+        InstanceMethod("getTokenString", &AddonVisionModel::GetTokenString),
+        InstanceMethod("getTokenAttributes", &AddonVisionModel::GetTokenAttributes),
+        InstanceMethod("isEogToken", &AddonVisionModel::IsEogToken),
+        InstanceMethod("getVocabularyType", &AddonVisionModel::GetVocabularyType),
+        InstanceMethod("shouldPrependBosToken", &AddonVisionModel::ShouldPrependBosToken),
+        InstanceMethod("shouldAppendEosToken", &AddonVisionModel::ShouldAppendEosToken),
+        InstanceMethod("getModelSize", &AddonVisionModel::GetModelSize)
+    });
+}
+
+// VisionUtils namespace implementation
+namespace VisionUtils {
+    ImageData decodeImage(const uint8_t* encodedData, size_t dataSize, const std::string& mimeType) {
+        ImageData result;
+
+#ifdef LLAMA_STBI_AVAILABLE
+        int width, height, channels;
+        unsigned char* data = stbi_load_from_memory(encodedData, (int)dataSize, &width, &height, &channels, 0);
+
+        if (data) {
+            size_t imageSize = width * height * channels;
+            result.data = std::make_unique<uint8_t[]>(imageSize);
+            std::memcpy(result.data.get(), data, imageSize);
+            result.width = width;
+            result.height = height;
+            result.channels = channels;
+
+            stbi_image_free(data);
+        }
+#endif
+
+        return result;
+    }
+
+    bool isSupportedImageFormat(const std::string& mimeType) {
+        static const std::vector<std::string> supported = {
+            "image/jpeg", "image/jpg", "image/png", "image/webp", "image/bmp", "image/tiff"
+        };
+        return std::find(supported.begin(), supported.end(), mimeType) != supported.end();
+    }
+
+    void normalizeImageData(uint8_t* data, int width, int height, int channels) {
+        // Simple normalization - could be enhanced based on model requirements
+        const float scale = 1.0f / 255.0f;
+        const size_t total = width * height * channels;
+
+        for (size_t i = 0; i < total; i++) {
+            data[i] = (uint8_t)(data[i] * scale * 255);
+        }
+    }
+}
