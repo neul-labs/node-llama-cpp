@@ -1,9 +1,10 @@
 import {DisposedError, EventRelay} from "lifecycle-utils";
-import {LlamaModel} from "../LlamaModel/LlamaModel.js";
+import {removeNullFields} from "../../utils/removeNullFields.js";
+import {LlamaModel, type LlamaModelOptions} from "../LlamaModel/LlamaModel.js";
 import {ImageInput, AudioInput, ImageEmbedding, AudioEmbedding, MultimodalCapabilities} from "../../types/MultimodalTypes.js";
 import {Llama} from "../../bindings/Llama.js";
+import {AddonVisionModel, AddonAudioModel} from "../../bindings/AddonTypes.js";
 import {LlamaContextOptions} from "../LlamaContext/types.js";
-import type {LlamaModelOptions} from "../LlamaModel/LlamaModel.js";
 
 export type LlamaMultimodalModelOptions = LlamaModelOptions & {
     /** Path to the multimodal projector file (mmproj.gguf) */
@@ -29,9 +30,12 @@ export type LlamaMultimodalModelOptions = LlamaModelOptions & {
 export class LlamaMultimodalModel {
     /** @internal */ private readonly _baseModel: LlamaModel;
     /** @internal */ private readonly _llama: Llama;
+    /** @internal */ private readonly _modelPath: string;
     /** @internal */ private readonly _mmprojPath?: string;
     /** @internal */ private readonly _enableVision: boolean;
     /** @internal */ private readonly _enableAudio: boolean;
+    /** @internal */ private _visionModel?: AddonVisionModel;
+    /** @internal */ private _audioModel?: AddonAudioModel;
     /** @internal */ private readonly _imageCache = new Map<string, ImageEmbedding>();
     /** @internal */ private readonly _audioCache = new Map<string, AudioEmbedding>();
     /** @internal */ private readonly _tempFiles = new Set<string>();
@@ -44,6 +48,7 @@ export class LlamaMultimodalModel {
     private constructor(baseModel: LlamaModel, options: LlamaMultimodalModelOptions) {
         this._baseModel = baseModel;
         this._llama = baseModel.llama;
+        this._modelPath = options.modelPath;
         this._mmprojPath = options.mmprojPath;
         this._enableVision = options.enableVision ?? true;
         this._enableAudio = options.enableAudio ?? true;
@@ -283,6 +288,17 @@ export class LlamaMultimodalModel {
         this._imageCache.clear();
         this._audioCache.clear();
 
+        // Dispose of vision and audio models
+        if (this._visionModel) {
+            await this._visionModel.dispose();
+            this._visionModel = undefined;
+        }
+
+        if (this._audioModel) {
+            await this._audioModel.dispose();
+            this._audioModel = undefined;
+        }
+
         await this._baseModel.dispose();
         this.onDispose.dispatchEvent();
     }
@@ -296,13 +312,45 @@ export class LlamaMultimodalModel {
 
     /** @internal */
     private async _initializeMultimodal(): Promise<void> {
-        // Initialize multimodal projector if path is provided
-        if (this._mmprojPath) {
+        // Initialize vision model if enabled and mmproj path is provided
+        if (this._enableVision && this._mmprojPath) {
             try {
-                await this._loadMultimodalProjector(this._mmprojPath);
+                this._visionModel = new this._llama._bindings.AddonVisionModel(
+                    this._modelPath,
+                    this._mmprojPath,
+                    removeNullFields({
+                        addonExports: this._llama._bindings,
+                        gpuLayers: 0, // Use CPU for vision processing by default
+                        vocabOnly: false,
+                        useMmap: this._llama.supportsMmap,
+                        useMlock: false,
+                        checkTensors: false
+                    })
+                );
+                await this._visionModel.init();
             } catch (error) {
-                console.warn(`Failed to load multimodal projector from ${this._mmprojPath}:`, error);
-                // Continue without the projector - basic multimodal functionality still available
+                console.warn(`Failed to initialize vision model with projector ${this._mmprojPath}:`, error);
+                this._visionModel = undefined;
+            }
+        }
+
+        // Initialize audio model if enabled
+        if (this._enableAudio) {
+            try {
+                // For audio, we typically use the same model path but with audio-specific initialization
+                // This would need to be adapted based on actual audio model requirements
+                this._audioModel = new this._llama._bindings.AddonAudioModel(
+                    this._modelPath,
+                    removeNullFields({
+                        addonExports: this._llama._bindings,
+                        sampleRate: 16000, // Default sample rate
+                        language: "en" // Default language
+                    })
+                );
+                await this._audioModel.init();
+            } catch (error) {
+                console.warn("Failed to initialize audio model:", error);
+                this._audioModel = undefined;
             }
         }
     }
@@ -335,6 +383,10 @@ export class LlamaMultimodalModel {
 
     /** @internal */
     private async _processImageInternal(input: ImageInput): Promise<ImageEmbedding> {
+        if (!this._visionModel) {
+            throw new Error("Vision model not initialized. Ensure mmprojPath is provided and vision is enabled.");
+        }
+
         try {
             let imagePath: string;
 
@@ -347,12 +399,12 @@ export class LlamaMultimodalModel {
                 imagePath = await this._saveImageToTemp(input);
             }
 
-            // Process image using native bindings
+            // Get general bindings for decoding (utilities are still on general bindings)
             const bindings = this._llama._bindings;
 
             // Check if multimodal processing is available
-            if (!bindings.decodeImage || !bindings.processImage) {
-                throw new Error("Multimodal image processing not available in current llama.cpp build. Please ensure you have a build with CLIP support.");
+            if (!bindings.decodeImage) {
+                throw new Error("Image decoding not available in current llama.cpp build. Please ensure you have a build with CLIP support.");
             }
 
             // Load and decode the image file
@@ -368,8 +420,8 @@ export class LlamaMultimodalModel {
             // Decode the image to get raw pixel data
             const decoded = await bindings.decodeImage(imageBuffer, mimeType);
 
-            // Process the image to get embeddings
-            const embedding = await bindings.processImage(decoded.data, decoded.width, decoded.height);
+            // Process the image using the vision model (not general bindings)
+            const embedding = await this._visionModel.processImage(decoded.data, decoded.width, decoded.height);
 
             return {
                 embedding: embedding,
@@ -392,6 +444,10 @@ export class LlamaMultimodalModel {
         generateTranscript?: boolean,
         language?: string
     }): Promise<AudioEmbedding> {
+        if (!this._audioModel) {
+            throw new Error("Audio model not initialized. Ensure audio is enabled.");
+        }
+
         try {
             let audioPath: string;
 
@@ -404,12 +460,12 @@ export class LlamaMultimodalModel {
                 audioPath = await this._saveAudioToTemp(input);
             }
 
-            // Process audio using native bindings
+            // Get general bindings for decoding (utilities are still on general bindings)
             const bindings = this._llama._bindings;
 
-            // Check if multimodal audio processing is available
-            if (!bindings.decodeAudio || !bindings.processAudio) {
-                throw new Error("Multimodal audio processing not available in current llama.cpp build. Please ensure you have a build with Whisper support.");
+            // Check if audio decoding is available
+            if (!bindings.decodeAudio) {
+                throw new Error("Audio decoding not available in current llama.cpp build. Please ensure you have a build with Whisper support.");
             }
 
             // Load and decode the audio file
@@ -426,8 +482,8 @@ export class LlamaMultimodalModel {
             // Decode the audio to get raw audio data
             const decoded = await bindings.decodeAudio(audioBuffer, mimeType);
 
-            // Process the audio to get embeddings and transcript
-            const result = await bindings.processAudio(decoded.data, decoded.sampleRate, options);
+            // Process the audio using the audio model (not general bindings)
+            const result = await this._audioModel.processAudio(decoded.data, decoded.sampleRate, options);
 
             return {
                 embedding: result.embedding,
