@@ -1,21 +1,22 @@
 #pragma once
-#include "llama.h"
 #include "napi.h"
-#include "addonGlobals.h"
-#include "AddonModel.h"
-#include <vector>
 #include <memory>
+#include <string>
+#include <vector>
 
 // Forward declarations for CLIP/vision processing
 struct clip_ctx;
 struct clip_image_u8;
 struct clip_image_f32;
+struct clip_image_f32_batch;
 
-class AddonVisionModel : public AddonModel {
+class AddonVisionModel : public Napi::ObjectWrap<AddonVisionModel> {
     public:
+        std::string modelPath;
         std::string mmprojPath;
         clip_ctx* clip_context = nullptr;
         bool visionModelLoaded = false;
+        bool disposed = false;
 
         // Vision capabilities
         struct VisionCapabilities {
@@ -32,12 +33,10 @@ class AddonVisionModel : public AddonModel {
         ~AddonVisionModel();
         void dispose();
 
-        // New multimodal methods
+        Napi::Value Init(const Napi::CallbackInfo& info);
+        Napi::Value Dispose(const Napi::CallbackInfo& info);
         Napi::Value ProcessImage(const Napi::CallbackInfo& info);
         Napi::Value GetVisionCapabilities(const Napi::CallbackInfo& info);
-
-        // Override Init to load vision model
-        Napi::Value Init(const Napi::CallbackInfo& info);
 
         static Napi::Function GetClass(Napi::Env env);
 
@@ -46,8 +45,8 @@ class AddonVisionModel : public AddonModel {
         bool loadVisionModel();
         std::vector<float> processImageData(const uint8_t* imageData, int width, int height, int channels);
         clip_image_u8* loadImageFromData(const uint8_t* data, int width, int height, int channels);
-        clip_image_f32* preprocessImage(clip_image_u8* image);
-        std::vector<float> encodeImage(clip_image_f32* image);
+        clip_image_f32_batch* preprocessImage(clip_image_u8* image);
+        std::vector<float> encodeImage(clip_image_f32_batch* images, clip_image_f32* referenceImage);
 
         // Helper methods
         void detectVisionCapabilities();

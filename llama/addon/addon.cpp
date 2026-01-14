@@ -5,11 +5,13 @@
 #include "AddonGrammarEvaluationState.h"
 #include "AddonSampler.h"
 #include "AddonContext.h"
+#include "AddonVisionModel.h"
 #include "globals/addonLog.h"
 #include "globals/addonProgress.h"
 #include "globals/getGpuInfo.h"
 #include "globals/getSwapInfo.h"
 #include "globals/getMemoryInfo.h"
+#include "stb/stb_image.h"
 
 // Multimodal includes
 #ifdef LLAMA_MTMD_AVAILABLE
@@ -18,6 +20,7 @@
 #endif
 
 #include <cmath>
+#include <cstring>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -207,24 +210,34 @@ Napi::Value addonDecodeImage(const Napi::CallbackInfo& info) {
     Napi::Uint8Array imageArray = info[0].As<Napi::Uint8Array>();
     std::string mimeType = info[1].As<Napi::String>().Utf8Value();
 
-    // Placeholder implementation
-    // In practice, this would use stb_image or similar to decode various image formats
-    Napi::Object result = Napi::Object::New(env);
+    int width = 0;
+    int height = 0;
+    int channels = 0;
 
-    // Mock decoded image data (this would be actual decoded pixels)
-    int width = 224, height = 224, channels = 3;
-    size_t dataSize = width * height * channels;
+    unsigned char* decoded = stbi_load_from_memory(
+        imageArray.Data(),
+        static_cast<int>(imageArray.ByteLength()),
+        &width,
+        &height,
+        &channels,
+        3
+    );
 
-    Napi::Uint8Array decodedData = Napi::Uint8Array::New(env, dataSize);
-    // Fill with placeholder pixel data
-    for (size_t i = 0; i < dataSize; i++) {
-        decodedData[i] = (uint8_t)(i % 255);
+    if (!decoded) {
+        Napi::Error::New(env, std::string("Image decode failed: ") + stbi_failure_reason()).ThrowAsJavaScriptException();
+        return env.Null();
     }
 
+    const size_t dataSize = static_cast<size_t>(width) * static_cast<size_t>(height) * 3;
+    Napi::Uint8Array decodedData = Napi::Uint8Array::New(env, dataSize);
+    std::memcpy(decodedData.Data(), decoded, dataSize);
+    stbi_image_free(decoded);
+
+    Napi::Object result = Napi::Object::New(env);
     result.Set("data", decodedData);
     result.Set("width", Napi::Number::New(env, width));
     result.Set("height", Napi::Number::New(env, height));
-    result.Set("channels", Napi::Number::New(env, channels));
+    result.Set("channels", Napi::Number::New(env, 3));
 
     return result;
 }
@@ -468,10 +481,10 @@ Napi::Object registerCallback(Napi::Env env, Napi::Object exports) {
     AddonContext::init(exports);
     AddonSampler::init(exports);
 
-    // Initialize multimodal classes conditionally - temporarily disabled while fixing inheritance
-    // #ifdef LLAMA_CLIP_AVAILABLE
-    //     exports.Set("AddonVisionModel", AddonVisionModel::GetClass(env));
-    // #endif
+    // Initialize multimodal classes conditionally
+    #ifdef LLAMA_CLIP_AVAILABLE
+        exports.Set("AddonVisionModel", AddonVisionModel::GetClass(env));
+    #endif
 
     // #ifdef LLAMA_WHISPER_AVAILABLE
     //     exports.Set("AddonAudioModel", AddonAudioModel::GetClass(env));

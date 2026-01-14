@@ -94,6 +94,7 @@ endif()
 add_subdirectory("llama.cpp")
 include_directories("llama.cpp")
 include_directories("./llama.cpp/common")
+include_directories("./llama.cpp/vendor")
 
 # This is needed to use methods in "llama-grammar.h" and "unicode.h"
 target_include_directories(llama PUBLIC "./llama.cpp/src")
@@ -160,7 +161,9 @@ if (LLAMA_MULTIMODAL)
         include_directories("${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/tools/mtmd")
 
         # Enable multimodal compilation flags
-        add_compile_definitions(LLAMA_MTMD_AVAILABLE)
+        # TODO: LLAMA_MTMD_AVAILABLE disabled due to API incompatibility
+        # The addon code uses mtmd_input_chunk as a stack variable, but it's an opaque type
+        # add_compile_definitions(LLAMA_MTMD_AVAILABLE)
         add_compile_definitions(LLAMA_CLIP_AVAILABLE)
         add_compile_definitions(LLAMA_MULTIMODAL_AVAILABLE)
 

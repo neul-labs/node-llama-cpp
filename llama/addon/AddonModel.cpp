@@ -232,8 +232,18 @@ AddonModel::AddonModel(const Napi::CallbackInfo& info) : Napi::ObjectWrap<AddonM
     // Get the model path
     modelPath = info[0].As<Napi::String>().Utf8Value();
 
+    Napi::Object options;
+    bool hasOptions = false;
+
     if (info.Length() > 1 && info[1].IsObject()) {
-        Napi::Object options = info[1].As<Napi::Object>();
+        options = info[1].As<Napi::Object>();
+        hasOptions = true;
+    } else if (info.Length() > 2 && info[2].IsObject()) {
+        options = info[2].As<Napi::Object>();
+        hasOptions = true;
+    }
+
+    if (hasOptions) {
 
         if (options.Has("addonExports")) {
             addonExportsRef = Napi::Persistent(options.Get("addonExports").As<Napi::Object>());
